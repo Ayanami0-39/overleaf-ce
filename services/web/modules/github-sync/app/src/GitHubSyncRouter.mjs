@@ -1,4 +1,4 @@
-import AuthenticationController from '../../../../app/src/Features/Authentication/AuthenticationController.mjs'
+﻿import AuthenticationController from '../../../../app/src/Features/Authentication/AuthenticationController.mjs'
 import RateLimiterMiddleware from '../../../../app/src/Features/Security/RateLimiterMiddleware.mjs'
 import { RateLimiter } from '../../../../app/src/infrastructure/RateLimiter.mjs'
 import GitHubSyncController from './GitHubSyncController.mjs'
@@ -13,6 +13,10 @@ export default {
    * @param {any} webRouter
    */
   apply(webRouter) {
+    webRouter.get(
+      '/user/github-sync/ui.js',
+      GitHubSyncController.uiScript
+    )
     webRouter.get(
       '/user/github-sync',
       AuthenticationController.requireLogin(),
@@ -40,6 +44,13 @@ export default {
       GitHubSyncController.sync
     )
     webRouter.post(
+      '/user/github-sync/pull',
+      AuthenticationController.requireLogin(),
+      GitHubSyncController.ensureEnabled,
+      RateLimiterMiddleware.rateLimit(rateLimiters.bind),
+      GitHubSyncController.pull
+    )
+    webRouter.post(
       '/user/github-sync/unbind',
       AuthenticationController.requireLogin(),
       GitHubSyncController.ensureEnabled,
@@ -47,3 +58,4 @@ export default {
     )
   },
 }
+

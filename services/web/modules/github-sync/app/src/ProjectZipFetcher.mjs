@@ -1,10 +1,14 @@
-// @ts-check
+﻿// @ts-check
 
 import crypto from 'node:crypto'
+import { createWriteStream } from 'node:fs'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import Path from 'node:path'
+import { pipeline } from 'node:stream/promises'
 import yauzl from 'yauzl'
+
+import ProjectZipStreamManager from '../../../../app/src/Features/Downloads/ProjectZipStreamManager.mjs'
 
 import {
   contentHash,
@@ -189,12 +193,51 @@ export async function extractProjectZip({
   return { files }
 }
 
+/**
+ * Build a zip of the project's *current* files using the web service's own
+ * exporter, the same code path as "Download as zip".
+ *
+ * This avoids the history-v1 HTTP API entirely: it needs no JWT and no
+ * service-to-service credentials, and it is identical in Community Edition and
+ * SaaS deployments.
+ *
+ * @param {{ projectId: string }} options
+ * @returns {Promise<{ zipPath: string, cleanup: () => Promise<void> }>}
+ */
+export async function fetchProjectZip({ projectId }) {
+  const stream = await new Promise((resolve, reject) => {
+    ProjectZipStreamManager.createZipStreamForProject(
+      projectId,
+      false,
+      null,
+      (err, projectStream) => {
+        if (err) reject(err)
+        else resolve(projectStream)
+      }
+    )
+  })
+
+  const zipPath = Path.join(
+    os.tmpdir(),
+    `overleaf-github-sync-${crypto.randomUUID()}.zip`
+  )
+  await pipeline(stream, createWriteStream(zipPath))
+  return {
+    zipPath,
+    cleanup: async () => {
+      await fs.rm(zipPath, { force: true })
+    },
+  }
+}
+
 export { contentHash, isExcluded, safeRelativePath }
 
 export default {
   fetchLatestProjectZip,
+  fetchProjectZip,
   extractProjectZip,
   contentHash,
   isExcluded,
   safeRelativePath,
 }
+

@@ -1,4 +1,4 @@
-// @ts-check
+﻿// @ts-check
 
 import fs from 'node:fs/promises'
 import Path from 'node:path'
@@ -10,7 +10,7 @@ import { slugify } from './ProjectExportUtils.mjs'
 import {
   contentHash,
   extractProjectZip,
-  fetchLatestProjectZip,
+  fetchProjectZip,
 } from './ProjectZipFetcher.mjs'
 
 export class SyncConflictError extends Error {
@@ -142,25 +142,11 @@ export async function syncUser({
     seenDirectories.add(directoryName)
     const destination = Path.join(projectsRoot, directoryName)
 
-    if (!project.historyId) {
-      projectResults.push({
-        id: project.id,
-        name: project.name,
-        changed: false,
-        hash: null,
-        skipped: true,
-      })
-      continue
-    }
-
     await fs.rm(destination, { recursive: true, force: true })
     await fs.mkdir(destination, { recursive: true })
 
-    const { zipPath, cleanup } = await fetchLatestProjectZip({
-      historyId: project.historyId,
-      v1HistoryUrl: Settings.apis.v1_history.url,
-      v1HistoryUser: Settings.apis.v1_history.user,
-      v1HistoryPass: Settings.apis.v1_history.pass,
+    const { zipPath, cleanup } = await fetchProjectZip({
+      projectId: project.id,
     })
     let hash
     try {
@@ -236,3 +222,4 @@ export async function syncUser({
 }
 
 export default { syncUser, slugify, withUserLock, SyncConflictError }
+

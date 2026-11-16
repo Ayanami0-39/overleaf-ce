@@ -1,4 +1,6 @@
-// @ts-check
+﻿// @ts-check
+
+import Path from 'node:path'
 
 import Settings from '@overleaf/settings'
 import logger from '@overleaf/logger'
@@ -12,6 +14,7 @@ import {
   GitHubApiError,
 } from './GitHubAppAuth.mjs'
 import { SyncConflictError, syncUser, withUserLock } from './GitHubSyncService.mjs'
+import { pullUser } from './GitHubSyncPull.mjs'
 
 // `Project` is a default export on newer Overleaf releases and a named export
 // on 6.x, so go through the module namespace and pick whichever exists.
@@ -47,15 +50,21 @@ function wantsJson(req) {
  */
 function respond(req, res, status, payload) {
   if (wantsJson(req)) {
-    res.status(status).json(payload)
-  } else if (status >= 400) {
-    res
-      .status(status)
-      .type('text/plain')
-      .send(typeof payload === 'string' ? payload : payload.message)
-  } else {
-    res.redirect('/user/github-sync')
+    return res.status(status).json(payload)
   }
+  const text =
+    typeof payload === 'string'
+      ? payload
+      : payload?.message ?? JSON.stringify(payload)
+  const ok = status < 400
+  res
+    .status(ok ? 200 : status)
+    .type('text/html')
+    .send(`<!doctype html><meta charset="utf-8"><title>GitHub Sync</title>
+<body style="font-family:sans-serif;max-width:40rem;margin:4rem auto;line-height:1.6">
+<h1>${ok ? 'Done' : 'Failed'}</h1>
+<pre style="white-space:pre-wrap;background:#f7f7f7;padding:1rem">${escapeHtml(text)}</pre>
+<p><a href="/user/github-sync">Back to /user/github-sync</a></p></body>`)
 }
 
 /**
@@ -159,9 +168,9 @@ ${status}
 <h2>Bind repository</h2>
 <form method="post" action="/user/github-sync/bind">
   <input type="hidden" name="_csrf" value="${escapeHtml(csrf)}">
-  <label>GitHub App installation id<input name="installation_id" required></label>
-  <label>Repository owner<input name="repo_owner" required placeholder="Ayanami0-39"></label>
-  <label>Repository name<input name="repo_name" required placeholder="overleaf-projects"></label>
+  <label>GitHub App installation id<input name="installation_id"></label>
+  <label>Repository owner<input name="repo_owner" placeholder="Ayanami0-39"></label>
+  <label>Repository name<input name="repo_name" placeholder="overleaf-projects"></label>
   <button type="submit">Bind</button>
 </form>
 
@@ -169,6 +178,15 @@ ${status}
 <form method="post" action="/user/github-sync/sync">
   <input type="hidden" name="_csrf" value="${escapeHtml(csrf)}">
   <button type="submit">Sync now</button>
+</form>
+
+
+<h2>Pull from GitHub</h2>
+<p><strong>Overwrites</strong> matching files in your Overleaf projects with the
+repository content. Files that only exist in Overleaf are kept.</p>
+<form method="post" action="/user/github-sync/pull" onsubmit="return confirm('Overwrite matching files in Overleaf with the GitHub repository content?')">
+  <input type="hidden" name="_csrf" value="${escapeHtml(csrf)}">
+  <button type="submit" class="danger">Pull from GitHub</button>
 </form>
 
 <h2>Unbind</h2>
@@ -219,6 +237,7 @@ export async function status(req, res, next) {
 export async function bind(req, res, next) {
   try {
     const userId = SessionManager.getLoggedInUserId(req.session)
+    logger.info({ userId }, 'github-sync: bind requested')
     const installationId = String(req.body.installation_id || '').trim()
     const owner = String(req.body.repo_owner || '').trim()
     const repo = String(req.body.repo_name || '').trim()
@@ -281,6 +300,7 @@ export async function bind(req, res, next) {
 export async function sync(req, res, next) {
   try {
     const userId = String(SessionManager.getLoggedInUserId(req.session))
+    logger.info({ userId }, 'github-sync: sync requested')
     const binding = await loadBinding(userId)
     if (!binding) {
       return respond(req, res, 409, {
@@ -351,11 +371,70 @@ export async function unbind(req, res, next) {
   }
 }
 
+
+/**
+ * Serves the small dashboard integration script. It is static and readable by
+ * any logged-in user, so it deliberately skips the binding lookup.
+ *
+ * @param {import('express').Request} req
+ * @param {import('express').Response} res
+ */
+export function uiScript(req, res) {
+  res.type('application/javascript')
+  res.sendFile(Path.join(import.meta.dirname, '..', 'public', 'ui.js'))
+}
+
+/**
+ * Copy the bound repository back into the Overleaf projects. Destructive: local
+ * content of the same path is replaced. Files that only exist in Overleaf are
+ * kept.
+ *
+ * @param {import('express').Request} req
+ * @param {import('express').Response} res
+ * @param {import('express').NextFunction} next
+ */
+export async function pull(req, res, next) {
+  try {
+    const userId = String(SessionManager.getLoggedInUserId(req.session))
+    const binding = await loadBinding(userId)
+    if (!binding) {
+      return respond(req, res, 409, {
+        message: 'bind a repository before pulling',
+      })
+    }
+
+    res.setTimeout(10 * 60 * 1000)
+    const result = await withUserLock(userId, async () => {
+      const { token } = await installationToken(userId, binding)
+      return pullUser({
+        userId,
+        binding,
+        token,
+        rootDirectory: Settings.githubSync.rootDirectory,
+      })
+    })
+
+    logger.info({ userId, ...result }, 'github-sync: pulled')
+    respond(req, res, 200, { ok: true, ...result })
+  } catch (/** @type {any} */ err) {
+    if (err instanceof GitHubApiError) {
+      return respond(req, res, 502, { message: err.message })
+    }
+    next(err)
+  }
+}
+
 export default {
   ensureEnabled,
+  uiScript,
   page,
   status,
   bind,
   sync,
+  pull,
   unbind,
 }
+
+
+
+

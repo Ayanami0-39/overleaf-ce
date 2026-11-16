@@ -26,15 +26,15 @@ const API_VERSION = '2022-11-28'
  */
 async function githubRequest(apiBaseUrl, path, options = {}) {
   const { token, method = 'GET', body } = options
+  /** @type {Record<string, string>} */
   const headers = {
     Accept: 'application/vnd.github+json',
     'X-GitHub-Api-Version': API_VERSION,
     'User-Agent': 'overleaf-github-sync',
   }
-  /** @type {Record<string, string>} */ (headers)['Authorization'] = token
-    ? `Bearer ${token}`
-    : ''
-  if (!token) delete /** @type {any} */ (headers).Authorization
+  if (token) {
+    headers.Authorization = `Bearer ${token}`
+  }
 
   const res = await fetch(`${apiBaseUrl}${path}`, {
     method,

@@ -1,4 +1,4 @@
-// @ts-check
+﻿// @ts-check
 
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
@@ -51,13 +51,17 @@ export default class GitMirror {
    * @returns {Promise<string>}
    */
   async git(args, { token } = {}) {
+    // `safe.directory=*` keeps git usable when the mirror was created by a
+    // different uid (for example during a manual test as root).
     const fullArgs = token
       ? [
+          '-c',
+          'safe.directory=*',
           '-c',
           `http.extraheader=Authorization: ${basicAuthHeader(token)}`,
           ...args,
         ]
-      : args
+      : ['-c', 'safe.directory=*', ...args]
     try {
       const { stdout } = await execFileAsync('git', fullArgs, {
         cwd: this.directory,
@@ -205,3 +209,4 @@ export default class GitMirror {
     })
   }
 }
+
