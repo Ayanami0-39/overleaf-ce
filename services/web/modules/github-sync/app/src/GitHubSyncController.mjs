@@ -4,6 +4,7 @@ import Settings from '@overleaf/settings'
 import logger from '@overleaf/logger'
 
 import Project from '../../../../app/src/models/Project.mjs'
+import SessionManager from '../../../../app/src/Features/Authentication/SessionManager.mjs'
 import GitHubSyncBinding from './GitHubSyncBinding.mjs'
 import {
   assertPushPermission,
@@ -116,7 +117,7 @@ async function installationToken(userId, binding) {
  */
 export async function page(req, res, next) {
   try {
-    const userId = req.session.user._id
+    const userId = SessionManager.getLoggedInUserId(req.session)
     const binding = await loadBinding(userId)
     const projects = await loadProjects(userId)
     const csrf = res.locals.csrfToken
@@ -184,7 +185,7 @@ ${status}
  */
 export async function status(req, res, next) {
   try {
-    const userId = req.session.user._id
+    const userId = SessionManager.getLoggedInUserId(req.session)
     const binding = await loadBinding(userId)
     const projects = await loadProjects(userId)
     res.json({
@@ -213,7 +214,7 @@ export async function status(req, res, next) {
  */
 export async function bind(req, res, next) {
   try {
-    const userId = req.session.user._id
+    const userId = SessionManager.getLoggedInUserId(req.session)
     const installationId = String(req.body.installation_id || '').trim()
     const owner = String(req.body.repo_owner || '').trim()
     const repo = String(req.body.repo_name || '').trim()
@@ -275,7 +276,7 @@ export async function bind(req, res, next) {
  */
 export async function sync(req, res, next) {
   try {
-    const userId = String(req.session.user._id)
+    const userId = String(SessionManager.getLoggedInUserId(req.session))
     const binding = await loadBinding(userId)
     if (!binding) {
       return respond(req, res, 409, {
@@ -338,7 +339,7 @@ export async function sync(req, res, next) {
  */
 export async function unbind(req, res, next) {
   try {
-    const userId = req.session.user._id
+    const userId = SessionManager.getLoggedInUserId(req.session)
     await GitHubSyncBinding.deleteOne({ user_id: userId }).exec()
     respond(req, res, 200, { ok: true })
   } catch (err) {
