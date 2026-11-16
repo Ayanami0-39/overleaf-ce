@@ -3,7 +3,7 @@
 import Settings from '@overleaf/settings'
 import logger from '@overleaf/logger'
 
-import Project from '../../../../app/src/models/Project.mjs'
+import * as ProjectModule from '../../../../app/src/models/Project.mjs'
 import SessionManager from '../../../../app/src/Features/Authentication/SessionManager.mjs'
 import GitHubSyncBinding from './GitHubSyncBinding.mjs'
 import {
@@ -12,6 +12,10 @@ import {
   GitHubApiError,
 } from './GitHubAppAuth.mjs'
 import { SyncConflictError, syncUser, withUserLock } from './GitHubSyncService.mjs'
+
+// `Project` is a default export on newer Overleaf releases and a named export
+// on 6.x, so go through the module namespace and pick whichever exists.
+const Project = ProjectModule.default ?? ProjectModule.Project
 
 const INSTALLATION_ID_PATTERN = /^\d+$/
 const REPO_PART_PATTERN = /^[A-Za-z0-9_.-]+$/
