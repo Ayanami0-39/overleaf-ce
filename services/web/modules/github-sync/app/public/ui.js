@@ -1,6 +1,5 @@
 /* Injected into the project dashboard: "GitHub Sync" (push) and
- * "Pull from GitHub" (destructive — requires typing "confirm") next to
- * "New project". */
+ * "Pull from GitHub" (destructive, type-to-confirm + per-project selection). */
 ;(function () {
   var PUSH_ID = 'github-sync-button'
   var PULL_ID = 'github-sync-pull-button'
@@ -30,22 +29,27 @@
     return meta ? meta.getAttribute('content') : ''
   }
 
-  function postJson(url) {
+  function postJson(url, body) {
     return fetch(url, {
       method: 'POST',
       credentials: 'same-origin',
-      headers: { Accept: 'application/json', 'X-CSRF-Token': csrfToken() },
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+        'X-CSRF-Token': csrfToken(),
+      },
+      body: body === undefined ? undefined : JSON.stringify(body),
     }).then(function (res) {
       return res
         .json()
         .catch(function () {
           return {}
         })
-        .then(function (body) {
+        .then(function (payload) {
           if (!res.ok) {
-            throw new Error(body && body.message ? body.message : 'HTTP ' + res.status)
+            throw new Error(payload && payload.message ? payload.message : 'HTTP ' + res.status)
           }
-          return body
+          return payload
         })
     })
   }
@@ -68,66 +72,133 @@
       })
   }
 
-  /* Type-to-confirm dialog. Resolves true only when the user types "confirm". */
+  function modalShell(title, inner) {
+    var overlay = document.createElement('div')
+    overlay.style.cssText =
+      'position:fixed;inset:0;background:rgba(17,24,39,.45);z-index:10001;' +
+      'display:flex;align-items:center;justify-content:center'
+    var card = document.createElement('div')
+    card.style.cssText =
+      'background:#fff;border-radius:10px;padding:1.5rem 1.75rem;width:34rem;max-height:80vh;' +
+      'display:flex;flex-direction:column;font:14px system-ui,sans-serif;color:#111827;' +
+      'box-shadow:0 10px 40px rgba(0,0,0,.25)'
+    card.innerHTML =
+      '<h3 style="margin:0 0 .75rem;font-size:1.05rem">' + title + '</h3>' + inner
+    overlay.appendChild(card)
+    document.body.appendChild(overlay)
+    return { overlay: overlay, card: card }
+  }
+
   function confirmPullDialog() {
     return new Promise(function (resolve) {
-      var overlay = document.createElement('div')
-      overlay.style.cssText =
-        'position:fixed;inset:0;background:rgba(17,24,39,.45);z-index:10001;' +
-        'display:flex;align-items:center;justify-content:center'
-
-      var card = document.createElement('div')
-      card.style.cssText =
-        'background:#fff;border-radius:10px;padding:1.5rem 1.75rem;width:28rem;' +
-        'font:14px system-ui,sans-serif;color:#111827;box-shadow:0 10px 40px rgba(0,0,0,.25)'
-
-      card.innerHTML =
-        '<h3 style="margin:0 0 .5rem;font-size:1.05rem">Pull from GitHub</h3>' +
+      var ui = modalShell(
+        'Pull from GitHub',
         '<p style="margin:0 0 1rem;line-height:1.5">This <strong>overwrites</strong> matching ' +
-        'files in your Overleaf projects with the repository content. Local changes that were ' +
-        'not pushed are lost.</p>' +
-        '<p style="margin:0 0 .4rem">Type <code style="background:#f3f4f6;padding:.1rem .3rem;' +
-        'border-radius:3px">confirm</code> to continue:</p>' +
-        '<input id="github-sync-confirm-input" autocomplete="off" ' +
-        'style="width:100%;box-sizing:border-box;padding:.5rem .6rem;border:1px solid #d1d5db;' +
-        'border-radius:6px;font:inherit;margin-bottom:.3rem">' +
-        '<p id="github-sync-confirm-error" style="color:#b3261e;margin:.2rem 0 .8rem;' +
-        'min-height:1rem;font-size:.85rem"></p>' +
-        '<div style="display:flex;justify-content:flex-end;gap:.5rem">' +
-        '<button id="github-sync-cancel" style="background:#e5e7eb;color:#111827;border:0;' +
-        'border-radius:999px;padding:.45rem 1rem;font-weight:600;cursor:pointer">Cancel</button>' +
-        '<button id="github-sync-ok" style="background:#b3261e;color:#fff;border:0;' +
-        'border-radius:999px;padding:.45rem 1rem;font-weight:600;cursor:pointer">Pull</button>' +
-        '</div>'
-
-      overlay.appendChild(card)
-      document.body.appendChild(overlay)
-      var input = card.querySelector('#github-sync-confirm-input')
-      var error = card.querySelector('#github-sync-confirm-error')
+          'files in your Overleaf projects with the repository content. Local changes that were ' +
+          'not pushed are lost.</p>' +
+          '<p style="margin:0 0 .4rem">Type <code style="background:#f3f4f6;padding:.1rem .3rem;' +
+          'border-radius:3px">confirm</code> to continue:</p>' +
+          '<input id="gs-confirm" autocomplete="off" style="width:100%;box-sizing:border-box;' +
+          'padding:.5rem .6rem;border:1px solid #d1d5db;border-radius:6px;font:inherit;margin-bottom:.3rem">' +
+          '<p id="gs-error" style="color:#b3261e;margin:.2rem 0 .8rem;min-height:1rem;font-size:.85rem"></p>' +
+          '<div style="display:flex;justify-content:flex-end;gap:.5rem">' +
+          '<button id="gs-cancel" style="background:#e5e7eb;color:#111827;border:0;border-radius:999px;' +
+          'padding:.45rem 1rem;font-weight:600;cursor:pointer">Cancel</button>' +
+          '<button id="gs-ok" style="background:#b3261e;color:#fff;border:0;border-radius:999px;' +
+          'padding:.45rem 1rem;font-weight:600;cursor:pointer">Continue</button></div>'
+      )
+      var input = ui.card.querySelector('#gs-confirm')
+      var error = ui.card.querySelector('#gs-error')
       input.focus()
-
       function close(result) {
-        overlay.remove()
+        ui.overlay.remove()
         resolve(result)
       }
-
-      card.querySelector('#github-sync-cancel').addEventListener('click', function () {
+      ui.card.querySelector('#gs-cancel').onclick = function () {
         close(false)
-      })
-      overlay.addEventListener('click', function (event) {
-        if (event.target === overlay) close(false)
-      })
-      input.addEventListener('keydown', function (event) {
-        if (event.key === 'Escape') close(false)
-      })
-      card.querySelector('#github-sync-ok').addEventListener('click', function () {
+      }
+      ui.overlay.onclick = function (e) {
+        if (e.target === ui.overlay) close(false)
+      }
+      ui.card.querySelector('#gs-ok').onclick = function () {
         if (input.value.trim().toLowerCase() !== 'confirm') {
           error.textContent = 'Please type "confirm" exactly.'
           input.focus()
           return
         }
         close(true)
-      })
+      }
+    })
+  }
+
+  /* Per-project selection. Everything starts unchecked; a select-all box is
+   * provided. Resolves to { dirName: 'create'|'update' } or null. */
+  function selectionDialog(projects) {
+    return new Promise(function (resolve) {
+      var rows = projects
+        .map(function (p) {
+          var kind = p.projectId ? 'update' : 'create'
+          var target = p.projectId ? 'existing project' : 'new project'
+          return (
+            '<tr data-dir="' + p.dirName + '" data-kind="' + kind + '" style="border-top:1px solid #e5e7eb">' +
+            '<td style="padding:.5rem .25rem"><input type="checkbox" class="gs-pick"></td>' +
+            '<td style="padding:.5rem .25rem"><strong>' + p.name + '</strong><br>' +
+            '<span style="color:#6b7280;font-size:.8rem">' + p.dirName + '</span></td>' +
+            '<td style="padding:.5rem .25rem;font-size:.85rem">' + target + '</td>' +
+            '<td style="padding:.5rem .25rem;font-size:.85rem">+' + p.files.added +
+            ' ~' + p.files.changed + ' =' + p.files.same + '</td></tr>'
+          )
+        })
+        .join('')
+
+      var ui = modalShell(
+        'Choose projects to pull',
+        '<label style="display:block;margin-bottom:.5rem"><input type="checkbox" id="gs-all"> Select all</label>' +
+          '<div style="overflow:auto;max-height:45vh;border:1px solid #e5e7eb;border-radius:8px">' +
+          '<table style="width:100%;border-collapse:collapse"><thead><tr style="text-align:left;font-size:.8rem;color:#6b7280">' +
+          '<th style="padding:.4rem .25rem"></th><th>Project</th><th>Action</th><th>Files</th></tr></thead>' +
+          '<tbody>' + rows + '</tbody></table></div>' +
+          '<p style="color:#6b7280;font-size:.8rem;margin:.6rem 0 0">+ new, ~ changed, = unchanged</p>' +
+          '<div style="display:flex;justify-content:flex-end;gap:.5rem;margin-top:1rem">' +
+          '<button id="gs-cancel" style="background:#e5e7eb;color:#111827;border:0;border-radius:999px;' +
+          'padding:.45rem 1rem;font-weight:600;cursor:pointer">Cancel</button>' +
+          '<button id="gs-apply" style="background:#b3261e;color:#fff;border:0;border-radius:999px;' +
+          'padding:.45rem 1rem;font-weight:600;cursor:pointer">Pull selected</button></div>'
+      )
+
+      var all = ui.card.querySelector('#gs-all')
+      var boxes = Array.prototype.slice.call(ui.card.querySelectorAll('.gs-pick'))
+      all.onchange = function () {
+        boxes.forEach(function (b) {
+          b.checked = all.checked
+        })
+      }
+
+      function close(result) {
+        ui.overlay.remove()
+        resolve(result)
+      }
+      ui.card.querySelector('#gs-cancel').onclick = function () {
+        close(null)
+      }
+      ui.overlay.onclick = function (e) {
+        if (e.target === ui.overlay) close(null)
+      }
+      ui.card.querySelector('#gs-apply').onclick = function () {
+        var actions = {}
+        var chosen = 0
+        boxes.forEach(function (box) {
+          if (!box.checked) return
+          var tr = box.closest('tr')
+          actions[tr.getAttribute('data-dir')] = tr.getAttribute('data-kind')
+          chosen++
+        })
+        if (chosen === 0) {
+          toast('Select at least one project', false)
+          return
+        }
+        close(actions)
+      }
     })
   }
 
@@ -153,23 +224,38 @@
 
   function onPull(event) {
     event.preventDefault()
-    confirmPullDialog().then(function (confirmed) {
-      if (!confirmed) return
-      requireBinding()
-        .then(function (status) {
-          if (!status) return
-          toast('Pulling from GitHub…', true)
-          return postJson('/user/github-sync/pull').then(function (body) {
-            toast(
-              'Pulled: ' + body.updated + ' updated, ' + body.created + ' created',
-              true
-            )
-          })
+    confirmPullDialog()
+      .then(function (confirmed) {
+        if (!confirmed) return null
+        return requireBinding()
+      })
+      .then(function (status) {
+        if (!status) return null
+        toast('Reading repository…', true)
+        return postJson('/user/github-sync/pull/preview')
+      })
+      .then(function (preview) {
+        if (!preview) return null
+        if (!preview.projects || preview.projects.length === 0) {
+          toast('No project directories in the repository', false)
+          return null
+        }
+        return selectionDialog(preview.projects)
+      })
+      .then(function (actions) {
+        if (!actions) return null
+        toast('Pulling from GitHub…', true)
+        return postJson('/user/github-sync/pull', { actions: actions }).then(function (body) {
+          toast(
+            'Pulled: ' + body.updated + ' updated, ' + body.created + ' created' +
+              (body.projectsCreated ? ', ' + body.projectsCreated + ' project(s) created' : ''),
+            true
+          )
         })
-        .catch(function (err) {
-          toast('GitHub pull failed: ' + err.message, false)
-        })
-    })
+      })
+      .catch(function (err) {
+        toast('GitHub pull failed: ' + err.message, false)
+      })
   }
 
   function makeButton(id, label, onClick) {

@@ -14,7 +14,7 @@ import {
   GitHubApiError,
 } from './GitHubAppAuth.mjs'
 import { SyncConflictError, syncUser, withUserLock } from './GitHubSyncService.mjs'
-import { pullUser } from './GitHubSyncPull.mjs'
+import { previewUser, pullUser } from './GitHubSyncPull.mjs'
 
 // `Project` is a default export on newer Overleaf releases and a named export
 // on 6.x, so go through the module namespace and pick whichever exists.
@@ -393,6 +393,38 @@ export function uiScript(req, res) {
  * @param {import('express').Response} res
  * @param {import('express').NextFunction} next
  */
+/**
+ * Describe what a pull would do. Read-only: nothing is created or written.
+ *
+ * @param {import('express').Request} req
+ * @param {import('express').Response} res
+ * @param {import('express').NextFunction} next
+ */
+export async function pullPreview(req, res, next) {
+  try {
+    const userId = String(SessionManager.getLoggedInUserId(req.session))
+    const binding = await loadBinding(userId)
+    if (!binding) {
+      return respond(req, res, 409, {
+        message: 'bind a repository before pulling',
+      })
+    }
+    const { token } = await installationToken(userId, binding)
+    const projects = await previewUser({
+      userId,
+      binding,
+      token,
+      rootDirectory: Settings.githubSync.rootDirectory,
+    })
+    respond(req, res, 200, { ok: true, projects })
+  } catch (/** @type {any} */ err) {
+    if (err instanceof GitHubApiError) {
+      return respond(req, res, 502, { message: err.message })
+    }
+    next(err)
+  }
+}
+
 export async function pull(req, res, next) {
   try {
     const userId = String(SessionManager.getLoggedInUserId(req.session))
@@ -404,6 +436,8 @@ export async function pull(req, res, next) {
     }
 
     res.setTimeout(10 * 60 * 1000)
+    const actions =
+      req.body && typeof req.body.actions === 'object' ? req.body.actions : {}
     const result = await withUserLock(userId, async () => {
       const { token } = await installationToken(userId, binding)
       return pullUser({
@@ -411,6 +445,7 @@ export async function pull(req, res, next) {
         binding,
         token,
         rootDirectory: Settings.githubSync.rootDirectory,
+        actions,
       })
     })
 
@@ -432,6 +467,7 @@ export default {
   bind,
   sync,
   pull,
+  pullPreview,
   unbind,
 }
 

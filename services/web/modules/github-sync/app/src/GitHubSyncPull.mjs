@@ -1,4 +1,4 @@
-// @ts-check
+﻿// @ts-check
 
 import fs from 'node:fs/promises'
 import Path from 'node:path'
@@ -79,9 +79,12 @@ function indexEntities(entities) {
 }
 
 /**
+ * Look for an existing project for a repository directory: by the id embedded
+ * in the directory name first, then by the slug as the project name.
+ *
  * @param {{ dirName: string, userId: string }} options
  */
-async function resolveProject({ dirName, userId }) {
+async function findProject({ dirName, userId }) {
   const match = /^([0-9a-f]{24})-(.+)$/.exec(dirName)
   const projectIdFromName = match ? match[1] : null
   const slug = match ? match[2] : dirName
@@ -89,29 +92,119 @@ async function resolveProject({ dirName, userId }) {
   if (projectIdFromName) {
     const byId = await Project.findOne(
       { _id: projectIdFromName, owner_ref: userId },
-      { _id: 1 }
+      { _id: 1, name: 1 }
     )
       .lean()
       .exec()
-    if (byId) return { projectId: String(byId._id), created: false }
+    if (byId) return { projectId: String(byId._id), name: byId.name }
   }
 
   const byName = await Project.findOne(
     { name: slug, owner_ref: userId, trashed: { $ne: userId }, deletedAt: null },
-    { _id: 1 }
+    { _id: 1, name: 1 }
   )
     .lean()
     .exec()
-  if (byName) return { projectId: String(byName._id), created: false }
+  if (byName) return { projectId: String(byName._id), name: byName.name }
 
-  const project = await ProjectCreationHandler.promises.createBlankProject(
-    userId,
-    slug
-  )
-  const projectId = String(project._id ?? project.project?._id)
-  return { projectId, created: true }
+  return { projectId: null, name: slug }
 }
 
+/**
+ * @param {{ dirName: string, userId: string }} options
+ */
+async function resolveProject({ dirName, userId }) {
+  const found = await findProject({ dirName, userId })
+  if (found.projectId) {
+    return { projectId: found.projectId, name: found.name, created: false }
+  }
+  const project = await ProjectCreationHandler.promises.createBlankProject(
+    userId,
+    found.name
+  )
+  return {
+    projectId: String(project._id ?? project.project?._id),
+    name: found.name,
+    created: true,
+  }
+}
+
+/**
+ * Describe what a pull would do, without writing anything.
+ *
+ * @param {{
+ *   userId: string,
+ *   binding: { repo_owner: string, repo_name: string, branch?: string },
+ *   token: string,
+ *   rootDirectory: string,
+ * }} options
+ */
+export async function previewUser({ userId, binding, token, rootDirectory }) {
+  const branch = binding.branch || 'main'
+  const mirrorDirectory = Path.join(rootDirectory, String(userId), 'repo')
+  const projectsRoot = Path.join(mirrorDirectory, 'projects')
+
+  const mirror = new GitMirror({ directory: mirrorDirectory, branch })
+  await mirror.ensureRepo({
+    remoteUrl: `https://github.com/${binding.repo_owner}/${binding.repo_name}.git`,
+  })
+  await mirror.fetch({ token })
+  await mirror.resetHard(`origin/${branch}`)
+
+  let dirs = []
+  try {
+    dirs = await fs.readdir(projectsRoot, { withFileTypes: true })
+  } catch {
+    return []
+  }
+
+  const out = []
+  for (const dir of dirs) {
+    if (!dir.isDirectory()) continue
+    const found = await findProject({ dirName: dir.name, userId })
+    const name = found.name
+
+    const { docs, files } = found.projectId
+      ? indexEntities(
+          await ProjectEntityHandler.promises.getAllEntities(found.projectId)
+        )
+      : { docs: new Map(), files: new Map() }
+
+    let added = 0
+    let changed = 0
+    let same = 0
+    for (const entry of await walk(Path.join(projectsRoot, dir.name))) {
+      const entityPath = `/${entry.rel}`
+      const ext = Path.extname(entry.rel).toLowerCase()
+      if (TEXT_EXTENSIONS.has(ext)) {
+        const content = await fs.readFile(entry.abs, 'utf8')
+        const lines = content.split('\n')
+        if (lines.length > 1 && lines[lines.length - 1] === '') lines.pop()
+        const existing = docs.get(entityPath)
+        const existingLines = existing && Array.isArray(existing.lines) ? existing.lines : null
+        if (!existingLines) added++
+        else if (
+          existingLines.length === lines.length &&
+          existingLines.every((line, i) => line === lines[i])
+        )
+          same++
+        else changed++
+      } else {
+        if (files.has(entityPath)) same++
+        else added++
+      }
+    }
+
+    out.push({
+      dirName: dir.name,
+      name,
+      projectId: found.projectId,
+      willCreate: !found.projectId,
+      files: { added, changed, same },
+    })
+  }
+  return out
+}
 /**
  * Copy the repository's project directories back into Overleaf.
  *
@@ -125,7 +218,7 @@ async function resolveProject({ dirName, userId }) {
  *   rootDirectory: string,
  * }} options
  */
-export async function pullUser({ userId, binding, token, rootDirectory }) {
+export async function pullUser({ userId, binding, token, rootDirectory, actions = {} }) {
   const branch = binding.branch || 'main'
   const mirrorDirectory = Path.join(rootDirectory, String(userId), 'repo')
   const projectsRoot = Path.join(mirrorDirectory, 'projects')
@@ -152,6 +245,8 @@ export async function pullUser({ userId, binding, token, rootDirectory }) {
 
   for (const dir of dirs) {
     if (!dir.isDirectory()) continue
+    const action = actions[dir.name]
+    if (action !== 'create' && action !== 'update') continue
 
     let resolved
     try {
@@ -229,3 +324,4 @@ export async function pullUser({ userId, binding, token, rootDirectory }) {
 }
 
 export default { pullUser }
+

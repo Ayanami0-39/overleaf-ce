@@ -44,6 +44,13 @@ export default {
       GitHubSyncController.sync
     )
     webRouter.post(
+      '/user/github-sync/pull/preview',
+      AuthenticationController.requireLogin(),
+      GitHubSyncController.ensureEnabled,
+      RateLimiterMiddleware.rateLimit(rateLimiters.bind),
+      GitHubSyncController.pullPreview
+    )
+    webRouter.post(
       '/user/github-sync/pull',
       AuthenticationController.requireLogin(),
       GitHubSyncController.ensureEnabled,
