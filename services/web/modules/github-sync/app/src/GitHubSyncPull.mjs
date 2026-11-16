@@ -1,16 +1,16 @@
-﻿// @ts-check
+// @ts-check
 
 import fs from 'node:fs/promises'
 import Path from 'node:path'
 
-import * as ProjectModule from '../../../../app/src/models/Project.mjs'
-import ProjectEntityHandler from '../../../../app/src/Features/Project/ProjectEntityHandler.mjs'
-import ProjectEntityUpdateHandler from '../../../../app/src/Features/Project/ProjectEntityUpdateHandler.mjs'
-import ProjectCreationHandler from '../../../../app/src/Features/Project/ProjectCreationHandler.mjs'
-
 import GitMirror from './GitMirror.mjs'
-
-const Project = ProjectModule.default ?? ProjectModule.Project
+import {
+  createBlankProject,
+  findProject,
+  getEntities,
+  upsertDoc,
+  upsertFile,
+} from './overleaf-adapter.mjs'
 
 const TEXT_EXTENSIONS = new Set([
   '.tex',
@@ -33,8 +33,6 @@ const TEXT_EXTENSIONS = new Set([
   '.css',
   '.js',
 ])
-
-const SOURCE = 'github-sync'
 
 /**
  * @param {string} dir
@@ -59,74 +57,24 @@ async function walk(dir, prefix = '') {
 }
 
 /**
- * `getAllEntities` returns arrays of `{ path, doc }` / `{ path, file }` on 6.x;
- * index them by path (with a leading slash) for lookup.
- *
- * @param {any} entities
+ * @param {string} dirName
  */
-function indexEntities(entities) {
-  /** @type {Map<string, any>} */
-  const docs = new Map()
-  for (const entry of entities.docs || []) {
-    if (entry && entry.path) docs.set(entry.path, entry.doc)
-  }
-  /** @type {Map<string, any>} */
-  const files = new Map()
-  for (const entry of entities.files || []) {
-    if (entry && entry.path) files.set(entry.path, entry.file)
-  }
-  return { docs, files }
-}
-
-/**
- * Look for an existing project for a repository directory: by the id embedded
- * in the directory name first, then by the slug as the project name.
- *
- * @param {{ dirName: string, userId: string }} options
- */
-async function findProject({ dirName, userId }) {
+function parseDirName(dirName) {
   const match = /^([0-9a-f]{24})-(.+)$/.exec(dirName)
-  const projectIdFromName = match ? match[1] : null
-  const slug = match ? match[2] : dirName
-
-  if (projectIdFromName) {
-    const byId = await Project.findOne(
-      { _id: projectIdFromName, owner_ref: userId },
-      { _id: 1, name: 1 }
-    )
-      .lean()
-      .exec()
-    if (byId) return { projectId: String(byId._id), name: byId.name }
-  }
-
-  const byName = await Project.findOne(
-    { name: slug, owner_ref: userId, trashed: { $ne: userId }, deletedAt: null },
-    { _id: 1, name: 1 }
-  )
-    .lean()
-    .exec()
-  if (byName) return { projectId: String(byName._id), name: byName.name }
-
-  return { projectId: null, name: slug }
+  return match
+    ? { projectId: match[1], slug: match[2] }
+    : { projectId: null, slug: dirName }
 }
 
 /**
  * @param {{ dirName: string, userId: string }} options
  */
-async function resolveProject({ dirName, userId }) {
-  const found = await findProject({ dirName, userId })
-  if (found.projectId) {
-    return { projectId: found.projectId, name: found.name, created: false }
-  }
-  const project = await ProjectCreationHandler.promises.createBlankProject(
-    userId,
-    found.name
-  )
-  return {
-    projectId: String(project._id ?? project.project?._id),
-    name: found.name,
-    created: true,
-  }
+async function resolve({ dirName, userId }) {
+  const { projectId, slug } = parseDirName(dirName)
+  const found = await findProject({ id: projectId ?? undefined, name: slug, userId })
+  if (found) return { ...found, created: false }
+  const createdId = await createBlankProject(userId, slug)
+  return { projectId: createdId, name: slug, created: true }
 }
 
 /**
@@ -161,13 +109,10 @@ export async function previewUser({ userId, binding, token, rootDirectory }) {
   const out = []
   for (const dir of dirs) {
     if (!dir.isDirectory()) continue
-    const found = await findProject({ dirName: dir.name, userId })
-    const name = found.name
-
-    const { docs, files } = found.projectId
-      ? indexEntities(
-          await ProjectEntityHandler.promises.getAllEntities(found.projectId)
-        )
+    const { projectId, slug } = parseDirName(dir.name)
+    const found = await findProject({ id: projectId ?? undefined, name: slug, userId })
+    const { docs, files } = found
+      ? await getEntities(found.projectId)
       : { docs: new Map(), files: new Map() }
 
     let added = 0
@@ -181,7 +126,8 @@ export async function previewUser({ userId, binding, token, rootDirectory }) {
         const lines = content.split('\n')
         if (lines.length > 1 && lines[lines.length - 1] === '') lines.pop()
         const existing = docs.get(entityPath)
-        const existingLines = existing && Array.isArray(existing.lines) ? existing.lines : null
+        const existingLines =
+          existing && Array.isArray(existing.lines) ? existing.lines : null
         if (!existingLines) added++
         else if (
           existingLines.length === lines.length &&
@@ -189,36 +135,45 @@ export async function previewUser({ userId, binding, token, rootDirectory }) {
         )
           same++
         else changed++
+      } else if (files.has(entityPath)) {
+        same++
       } else {
-        if (files.has(entityPath)) same++
-        else added++
+        added++
       }
     }
 
     out.push({
       dirName: dir.name,
-      name,
-      projectId: found.projectId,
-      willCreate: !found.projectId,
+      name: found ? found.name : slug,
+      projectId: found ? found.projectId : null,
+      willCreate: !found,
       files: { added, changed, same },
     })
   }
   return out
 }
+
 /**
- * Copy the repository's project directories back into Overleaf.
+ * Copy the selected repository project directories back into Overleaf.
  *
- * Missing projects are created; existing ones are updated. Files that only
- * exist in Overleaf are kept.
+ * Only directories present in `actions` with 'create' or 'update' are touched;
+ * everything else is ignored. Files that only exist in Overleaf are kept.
  *
  * @param {{
  *   userId: string,
  *   binding: { repo_owner: string, repo_name: string, branch?: string },
  *   token: string,
  *   rootDirectory: string,
+ *   actions?: Record<string, 'create' | 'update'>,
  * }} options
  */
-export async function pullUser({ userId, binding, token, rootDirectory, actions = {} }) {
+export async function pullUser({
+  userId,
+  binding,
+  token,
+  rootDirectory,
+  actions = {},
+}) {
   const branch = binding.branch || 'main'
   const mirrorDirectory = Path.join(rootDirectory, String(userId), 'repo')
   const projectsRoot = Path.join(mirrorDirectory, 'projects')
@@ -250,23 +205,19 @@ export async function pullUser({ userId, binding, token, rootDirectory, actions 
 
     let resolved
     try {
-      resolved = await resolveProject({ dirName: dir.name, userId })
-    } catch (err) {
+      resolved = await resolve({ dirName: dir.name, userId })
+    } catch {
       skipped++
       continue
     }
     if (resolved.created) projectsCreated++
-    const { projectId } = resolved
+    const projectId = resolved.projectId
 
-    const { docs, files } = indexEntities(
-      await ProjectEntityHandler.promises.getAllEntities(projectId)
-    )
-
+    const { docs, files } = await getEntities(projectId)
     const projectDir = Path.join(projectsRoot, dir.name)
-    const entries = await walk(projectDir)
     let touched = false
 
-    for (const entry of entries) {
+    for (const entry of await walk(projectDir)) {
       const entityPath = `/${entry.rel}`
       const ext = Path.extname(entry.rel).toLowerCase()
 
@@ -276,35 +227,21 @@ export async function pullUser({ userId, binding, token, rootDirectory, actions 
         if (lines.length > 1 && lines[lines.length - 1] === '') lines.pop()
 
         const existing = docs.get(entityPath)
-        const existingLines = existing && Array.isArray(existing.lines)
-          ? existing.lines
-          : null
+        const existingLines =
+          existing && Array.isArray(existing.lines) ? existing.lines : null
         if (existingLines) {
           const same =
             existingLines.length === lines.length &&
             existingLines.every((line, i) => line === lines[i])
           if (same) continue
         }
-        await ProjectEntityUpdateHandler.promises.upsertDocWithPath(
-          projectId,
-          entityPath,
-          lines,
-          SOURCE,
-          userId
-        )
+        await upsertDoc(projectId, entityPath, lines, userId)
         if (existingLines) updated++
         else created++
         touched = true
       } else {
         const existing = files.get(entityPath)
-        await ProjectEntityUpdateHandler.promises.upsertFileWithPath(
-          projectId,
-          entityPath,
-          entry.abs,
-          null,
-          userId,
-          SOURCE
-        )
+        await upsertFile(projectId, entityPath, entry.abs, userId)
         if (existing) updated++
         else created++
         touched = true
@@ -323,5 +260,4 @@ export async function pullUser({ userId, binding, token, rootDirectory, actions 
   }
 }
 
-export default { pullUser }
-
+export default { previewUser, pullUser }
