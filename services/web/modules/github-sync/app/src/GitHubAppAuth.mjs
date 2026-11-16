@@ -1,5 +1,7 @@
 // @ts-check
 
+import crypto from 'node:crypto'
+
 import { SignJWT, importPKCS8 } from 'jose'
 
 export class GitHubApiError extends Error {
@@ -51,11 +53,25 @@ async function githubRequest(apiBaseUrl, path, options = {}) {
 
 /**
  * Normalize a PEM key that may have been supplied through an environment
- * variable with literal `\n` sequences.
+ * variable with literal `\n` sequences, and convert PKCS#1 (`BEGIN RSA PRIVATE
+ * KEY`, what GitHub hands out) to PKCS#8 (`BEGIN PRIVATE KEY`), which is what
+ * `jose.importPKCS8` accepts.
+ *
  * @param {string} privateKey
+ * @returns {string}
  */
-function normalizePem(privateKey) {
-  return privateKey.includes('\\n') ? privateKey.replace(/\\n/g, '\n') : privateKey
+export function normalizePrivateKey(privateKey) {
+  const withNewlines = privateKey.includes('\\n')
+    ? privateKey.replace(/\\n/g, '\n')
+    : privateKey
+  try {
+    return crypto
+      .createPrivateKey(withNewlines)
+      .export({ type: 'pkcs8', format: 'pem' })
+      .toString()
+  } catch {
+    return withNewlines
+  }
 }
 
 /**
@@ -83,7 +99,7 @@ export async function createInstallationToken({
       'GitHub App credentials are not configured (GITHUB_APP_ID / GITHUB_APP_PRIVATE_KEY)'
     )
   }
-  const key = await importPKCS8(normalizePem(privateKey), 'RS256')
+  const key = await importPKCS8(normalizePrivateKey(privateKey), 'RS256')
   const now = Math.floor(Date.now() / 1000)
   const appJwt = await new SignJWT({})
     .setProtectedHeader({ alg: 'RS256' })
@@ -147,8 +163,13 @@ export async function getRepository({
 }
 
 /**
- * Ensure the installation can actually push to the repository. A read-only
- * grant passes the existence check but must fail here, before we touch git.
+ * Confirm the App installation can see the repository.
+ *
+ * Do not trust `permissions.push` here: for installation access tokens GitHub
+ * reports it as `false` even when a `git push` with the same token succeeds
+ * (verified against a live installation). Visibility is the permission
+ * boundary we can check cheaply — a 404 means the installation was not granted
+ * this repository — while write access is proven by the first real push.
  *
  * @param {{
  *   token: string,
@@ -157,30 +178,23 @@ export async function getRepository({
  *   apiBaseUrl?: string,
  * }} options
  */
-export async function assertPushPermission({
+export async function assertRepositoryAccess({
   token,
   owner,
   repo,
   apiBaseUrl = 'https://api.github.com',
 }) {
-  const data = await githubRequest(
+  return githubRequest(
     apiBaseUrl,
     `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`,
     { token }
   )
-  const canPush = data.permissions?.push === true
-  if (!canPush) {
-    throw new GitHubApiError(
-      `the GitHub App installation cannot push to ${owner}/${repo}`,
-      { status: 403 }
-    )
-  }
-  return data
 }
 
 export default {
   createInstallationToken,
   getRepository,
-  assertPushPermission,
+  assertRepositoryAccess,
+  normalizePrivateKey,
   GitHubApiError,
 }

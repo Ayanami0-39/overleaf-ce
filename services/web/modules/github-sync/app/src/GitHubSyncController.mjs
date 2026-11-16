@@ -7,7 +7,7 @@ import Project from '../../../../app/src/models/Project.mjs'
 import SessionManager from '../../../../app/src/Features/Authentication/SessionManager.mjs'
 import GitHubSyncBinding from './GitHubSyncBinding.mjs'
 import {
-  assertPushPermission,
+  assertRepositoryAccess,
   createInstallationToken,
   GitHubApiError,
 } from './GitHubAppAuth.mjs'
@@ -235,7 +235,7 @@ export async function bind(req, res, next) {
       installationId,
       apiBaseUrl: config.apiBaseUrl,
     })
-    const repository = await assertPushPermission({
+    const repository = await assertRepositoryAccess({
       token,
       owner,
       repo,

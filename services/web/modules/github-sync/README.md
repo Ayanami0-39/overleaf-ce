@@ -48,7 +48,9 @@ GITHUB_SYNC_ROOT_DIRECTORY=/var/lib/overleaf/github-sync
 ```
 
 `GITHUB_APP_PRIVATE_KEY` accepts `\n` escapes, which keeps it on one line in
-`variables.env`. Restart the container afterwards.
+`variables.env`. PKCS#1 (`BEGIN RSA PRIVATE KEY`, what GitHub hands out) and
+PKCS#8 are both accepted — the key is converted at load time. Restart the
+container afterwards.
 
 > The App private key stays on the server. Per-request installation tokens are
 > minted with `jose`, expire after one hour and are never stored. Nothing is
@@ -59,8 +61,10 @@ GITHUB_SYNC_ROOT_DIRECTORY=/var/lib/overleaf/github-sync
 Sign in and open `/user/github-sync`:
 
 - **Bind repository** — installation id, `owner`, `repo`. The App installation
-  must be granted access to that repository *and* have push permission; both are
-  verified before the binding is stored.
+  must be granted access to that repository; visibility is verified before the
+  binding is stored. Write access is proven by the first real push (`git push`
+  succeeds with installation tokens even though the REST `permissions.push`
+  flag reports `false`).
 - **Sync now** — runs one sync synchronously (up to 10 minutes).
 - **Unbind** — removes the binding; the mirror directory is left in place.
 
