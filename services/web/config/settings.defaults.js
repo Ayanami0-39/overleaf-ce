@@ -1081,11 +1081,31 @@ module.exports = {
     railModals: [],
   },
 
+  // GitHub Sync: export every project of one user into a single GitHub
+  // repository (see services/web/modules/github-sync). Disabled unless a GitHub
+  // App is configured, so an unconfigured instance behaves exactly as before.
+  githubSync: {
+    enabled: process.env.GITHUB_SYNC_ENABLED === 'true',
+    appId: process.env.GITHUB_APP_ID || '',
+    privateKey: process.env.GITHUB_APP_PRIVATE_KEY || '',
+    apiBaseUrl: process.env.GITHUB_API_URL || 'https://api.github.com',
+    rootDirectory:
+      process.env.GITHUB_SYNC_ROOT_DIRECTORY || '/var/lib/overleaf/github-sync',
+    branch: process.env.GITHUB_SYNC_BRANCH || 'main',
+    excludedPatterns: [
+      '^output\\.pdf$',
+      '^output\\.log$',
+      '^output\\.out$',
+      '\\.(aux|log|out|toc|fls|fdb_latexmk|synctex\\.gz|bbl|blg|nav|snm|vrb|run\\.xml)$',
+    ],
+  },
+
   moduleImportSequence: [
     'history-v1',
     'launchpad',
     'server-ce-scripts',
     'user-activate',
+    'github-sync',
   ],
   viewIncludes: {},
 
