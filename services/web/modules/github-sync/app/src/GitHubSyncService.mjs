@@ -134,11 +134,35 @@ export async function syncUser({
   /** @type {Array<{ id: string, name: string, changed: boolean, hash: string|null, skipped: boolean }>} */
   const projectResults = []
   const seenDirectories = new Set()
+
+  // Projects recreated from the repository get a new id, which would otherwise
+  // add a second directory for the same project on the next push. Reuse a
+  // directory whose embedded id is no longer a live project when its slug
+  // matches the project we are about to export.
+  const existingDirectories = await listMirroredProjects(projectsRoot)
+  const liveIds = new Set(projects.map(project => String(project.id)))
+  /** @type {Map<string, string>} */
+  const staleBySlug = new Map()
+  for (const dir of existingDirectories) {
+    const match = /^([0-9a-f]{24})-(.+)$/.exec(dir)
+    if (!match) continue
+    if (liveIds.has(match[1])) continue
+    if (!staleBySlug.has(match[2])) staleBySlug.set(match[2], dir)
+  }
   /** @type {string[]} */
   const commitLines = []
 
   for (const project of projects) {
-    const directoryName = `${project.id}-${slugify(project.name)}`
+    const slug = slugify(project.name)
+    const preferred = `${project.id}-${slug}`
+    let directoryName = preferred
+    if (!existingDirectories.includes(preferred)) {
+      const recycled = staleBySlug.get(slug)
+      if (recycled) {
+        directoryName = recycled
+        staleBySlug.delete(slug)
+      }
+    }
     seenDirectories.add(directoryName)
     const destination = Path.join(projectsRoot, directoryName)
 
